@@ -1,4 +1,4 @@
-# NRSC5 GUI — Listen & Record
+# NRSC5 GUI
 
 A graphical interface for **nrsc5** that allows tuning, listening, and recording HD Radio broadcasts. Built with **PyQt5** and **pyqtgraph**, it provides real-time metadata display, BER visualization, and station distance calculations.
 
