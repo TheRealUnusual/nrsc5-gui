@@ -176,18 +176,28 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.display_title_label = QtWidgets.QLabel("—")
         self.display_title_label.setAlignment(QtCore.Qt.AlignCenter)
         self.display_title_label.setWordWrap(True)
+        self.display_title_base_size = 24
         title_font = self.display_title_label.font()
-        title_font.setPointSize(24)
+        title_font.setPointSize(self.display_title_base_size)
         title_font.setBold(True)
         self.display_title_label.setFont(title_font)
+        self.display_title_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Preferred,
+        )
 
         self.display_artist_label = QtWidgets.QLabel("—")
         self.display_artist_label.setAlignment(QtCore.Qt.AlignCenter)
         self.display_artist_label.setWordWrap(True)
+        self.display_artist_base_size = 16
         artist_font = self.display_artist_label.font()
-        artist_font.setPointSize(16)
+        artist_font.setPointSize(self.display_artist_base_size)
         artist_font.setBold(False)
         self.display_artist_label.setFont(artist_font)
+        self.display_artist_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Preferred,
+        )
 
         # ---------- Layout: Top controls + Tabs ----------
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -285,14 +295,12 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         # ---------- Display tab layout ----------
         display_layout = QtWidgets.QVBoxLayout(self.display_tab)
-        # Keep a small fixed margin from the very top
-        display_layout.addSpacing(20)
-        display_layout.addWidget(self.display_title_label)
-        # This stretch grows/shrinks with window height, separating title and artist
+        display_layout.setContentsMargins(24, 24, 24, 24)
         display_layout.addStretch(1)
-        display_layout.addWidget(self.display_artist_label)
-        # Extra stretch below so the artist doesn't cling to the bottom
-        display_layout.addStretch(2)
+        display_layout.addWidget(self.display_title_label, alignment=QtCore.Qt.AlignCenter)
+        display_layout.addSpacing(16)
+        display_layout.addWidget(self.display_artist_label, alignment=QtCore.Qt.AlignCenter)
+        display_layout.addStretch(1)
         # ---------- Presets tab layout ----------
         self._init_presets_tab()
 
@@ -325,6 +333,7 @@ class NRSC5Gui(QtWidgets.QWidget):
         self._load_settings()
         self._update_user_location()  # parse user location from loaded text
         self._update_info_summary_line()
+        self._update_display_fonts()
 
         # ---------- Check binaries ----------
         self._check_dependency("nrsc5")
@@ -702,7 +711,6 @@ class NRSC5Gui(QtWidgets.QWidget):
             
                 metadata_changed = True
 
-
             m = self.re_album.search(line)
             if m:
                 self.album_label.setText(m.group(1).strip())
@@ -724,6 +732,7 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         if metadata_changed:
             self._maybe_add_history_entry()
+            self._update_display_fonts()
 
     def _update_ber_graph(self, ber_value: float):
         """Append a BER value (in percent) and refresh the BER plot."""
@@ -1239,6 +1248,60 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         self.info_summary_label.setText(" | ".join(parts))
 
+    def _update_display_fonts(self):
+        available_height = max(self.display_tab.height(), 1)
+        available_width = max(self.display_tab.width(), 1)
+        height_scale = available_height / 600.0
+        width_scale = available_width / 800.0
+        scale = min(max(min(height_scale, width_scale), 0.7), 3.0)
+
+        title_font = self.display_title_label.font()
+        title_font.setPointSize(int(self.display_title_base_size * scale))
+        title_font = self._fit_font_to_label(
+            self.display_title_label, title_font, max_height_ratio=0.42
+        )
+        self.display_title_label.setFont(title_font)
+
+        artist_font = self.display_artist_label.font()
+        artist_font.setPointSize(int(self.display_artist_base_size * scale))
+        artist_font = self._fit_font_to_label(
+            self.display_artist_label, artist_font, max_height_ratio=0.24
+        )
+        self.display_artist_label.setFont(artist_font)
+
+    def _fit_font_to_label(
+        self,
+        label: QtWidgets.QLabel,
+        font: QtGui.QFont,
+        max_height_ratio: float,
+    ) -> QtGui.QFont:
+        metrics = QtGui.QFontMetrics(font)
+        text = label.text() or "—"
+        padding = 16
+        max_width = max(label.width() - padding, 1)
+        max_height = max(int(self.display_tab.height() * max_height_ratio), 1)
+
+        while (
+            (metrics.boundingRect(0, 0, max_width, 10_000, QtCore.Qt.TextWordWrap, text).height() > max_height)
+            and font.pointSize() > 5
+        ):
+            font.setPointSize(font.pointSize() - 1)
+            metrics = QtGui.QFontMetrics(font)
+
+        while (
+            metrics.boundingRect(0, 0, max_width, 10_000, QtCore.Qt.TextWordWrap, text).height() < max_height * 0.85
+            and font.pointSize() < 120
+        ):
+            font.setPointSize(font.pointSize() + 1)
+            metrics = QtGui.QFontMetrics(font)
+
+        if (
+            metrics.boundingRect(0, 0, max_width, 10_000, QtCore.Qt.TextWordWrap, text).height()
+            > max_height
+        ):
+            font.setPointSize(max(font.pointSize() - 1, 12))
+
+        return font
 
     def _reset_labels(self):
         self.title_label.setText("—")
@@ -1269,6 +1332,10 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.last_artist = None
         self.last_album = None
         self.history_table.setRowCount(0)
+
+    def resizeEvent(self, event):
+        self._update_display_fonts()
+        super().resizeEvent(event)
 
     def _sanitize_filename(self, text):
         return re.sub(r'[\\/*?:"<>|]', "", text).strip()
