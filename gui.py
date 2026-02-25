@@ -43,7 +43,7 @@ class NRSC5Gui(QtWidgets.QWidget):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("nrsc5 GUI — Listen & Record")
+        self.setWindowTitle("NRSC5 GUI")
         self.resize(900, 600)
 
         # ---------- Persistent settings ----------
