@@ -1,6 +1,6 @@
 # NRSC5 GUI
 
-A graphical interface for **nrsc5** that allows tuning, listening, and recording HD Radio broadcasts. Built with **PyQt5** and **pyqtgraph**, it provides real-time metadata display, BER visualization, and station distance calculations.
+A graphical interface for **nrsc5** that allows tuning, listening, and recording HD Radio broadcasts.
 
 ---
 
@@ -18,10 +18,14 @@ A graphical interface for **nrsc5** that allows tuning, listening, and recording
 - Real-time NRSC5 log with optional display
 
 ---
+## Screenshots
+![Screenshots](https://github.com/TheRealUnusual/nrsc5-gui/blob/main/docs/images/collage.png)
+
+---
 
 ## Requirements
 
-- Python 3
+- [Python 3](https://www.python.org/)
 - [PyQt5](https://pypi.org/project/PyQt5/)
 - [pyqtgraph](https://pypi.org/project/pyqtgraph/)
 - [nrsc5](https://github.com/theori-io/nrsc5)
@@ -32,23 +36,23 @@ A graphical interface for **nrsc5** that allows tuning, listening, and recording
 
 ## Installation
 
-1. Clone this repository or download `nrsc5_gui_qt.py`.
-2. Install Python dependencies:
+1. Clone this repository.
 
+3. Install Python dependencies:
 ```bash
-pip install PyQt5 pyqtgraph
+pip install -r requirements.txt
 ```
 
-3. Ensure nrsc5, ffmpeg, and ffplay are installed and available in your PATH.
+4. Ensure nrsc5, ffmpeg, and ffplay are installed and available in your PATH.
 
-4. Optionally, set up a remote RTL-SDR via rtl_tcp.
+5. Set up an RTL-SDR via rtl_tcp.
 
 ## Usage
 
 Run the GUI with:
 
 ```bash
-python3 nrsc5_gui_qt.py
+python3 main.py
 ```
 
 Steps:
@@ -57,13 +61,9 @@ Steps:
 
 2. Select the Program number (0–3).
 
-3. If using a remote RTL-SDR, enter the host and port.
+3. Enter the rtl_tcp host and port.
 
 4. Click Start Radio to begin streaming.
-
-5. Click Start Recording to save audio to the configured directory.
-
-6. Monitor metadata, BER, and history in the GUI.
 
 ### Presets
 
@@ -75,6 +75,8 @@ Steps:
 
 ### Configuration
 
+- rtl_tcp IP address and port
+
 - Recording directory: Select where recorded files are saved.
 
 - Units: Metric or Imperial for distance and altitude calculations.
@@ -84,11 +86,3 @@ Steps:
 ## License
 
 This project is licensed under the GNU General Public License v3.0 or later (GPL-3.0-or-later). See the [LICENSE](LICENSE) file for details.
-
-## Notes
-
-- The BER graph updates in real time and expands the Y-axis if the error rate exceeds 10%.
-
-- Metadata parsing supports song title, artist, album, and station location.
-
-- The Display tab can override artist display for fun (e.g., Easter egg for specific artists).
