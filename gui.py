@@ -30,6 +30,7 @@ from streaming import (
     start_ffplay_process,
     start_ffmpeg_recorder,
     stop_ffmpeg_recorder,
+    NRSC5Wrapper,
 )
 
 
@@ -339,6 +340,7 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.user_alt_edit.editingFinished.connect(self._update_user_location)
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.prog_combo.currentIndexChanged.connect(self._on_program_combo_changed)
 
         # ---------- Load settings ----------
         self._load_settings()
@@ -434,18 +436,37 @@ class NRSC5Gui(QtWidgets.QWidget):
         meta = item.data(QtCore.Qt.UserRole)
         if not meta:
             return
-        freq = meta.get("freq", "")
-        prog = meta.get("prog", "0")
-        if freq:
-            self.freq_edit.setText(freq)
-        self._select_program_by_number(prog)
+        new_freq = meta.get("freq", "").strip()
+        new_prog_str = meta.get("prog", "0")
+        new_prog = int(new_prog_str)
 
-        if self.radio_running:
+        current_freq = self.freq_edit.text().strip()
+        current_prog = self._get_current_program_number()
+
+        # Update UI fields immediately
+        if new_freq:
+            self.freq_edit.setText(new_freq)
+        self._select_program_by_number(new_prog_str)
+
+        if not self.radio_running:
+            self.start_stream()
+            return
+
+        freq_changed = new_freq and new_freq != current_freq
+        prog_changed = new_prog != current_prog
+
+        if freq_changed:
+            # Frequency change needs full restart
             self.stopping_radio = True
             self.stop_stream()
             self.stopping_radio = False
-            self.start_stream()
-
+            QtCore.QTimer.singleShot(30, self.start_stream)  # yields to Qt → no freeze
+        elif prog_changed:
+            # Program-only change → try live switch
+            if not self._live_change_program(new_prog):
+                # fallback (very rare)
+                self.stop_stream()
+                QtCore.QTimer.singleShot(30, self.start_stream)
     def _import_presets(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Import Presets", "", "JSON Files (*.json);;All Files (*)"
@@ -795,6 +816,22 @@ class NRSC5Gui(QtWidgets.QWidget):
             self.user_alt = None
 
         self._update_distances()
+    
+    def _live_change_program(self, new_prog):
+        """Try to change program without restarting nrsc5."""
+        if (
+            self.radio_running
+            and isinstance(self.proc_nrsc5, NRSC5Wrapper)
+        ):
+            return self.proc_nrsc5.set_program(new_prog)
+        return False
+
+
+    def _on_program_combo_changed(self, index):
+        """Live program switch when user changes the dropdown while running."""
+        if self.radio_running:
+            prog = self._get_current_program_number()
+            self._live_change_program(prog)
 
     def _units_changed(self, index):
         self._update_user_location()
@@ -853,6 +890,7 @@ class NRSC5Gui(QtWidgets.QWidget):
                 self.stopping_radio = True
                 self.stop_stream()
                 self.stopping_radio = False
+                QtCore.QTimer.singleShot(30, self.start_stream)  # no freeze
             else:
                 self.start_stream()
         finally:
@@ -1075,7 +1113,7 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         self.freq_edit.setEnabled(not running)
         self.host_edit.setEnabled(not running)
-        self.prog_combo.setEnabled(not running)
+        self.prog_combo.setEnabled(True)
         self.port_edit.setEnabled(not running)
         self.record_dir_edit.setEnabled(not running)
         self.browse_dir_btn.setEnabled(not running)
