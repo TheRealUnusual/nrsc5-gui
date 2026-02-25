@@ -881,6 +881,7 @@ class NRSC5Gui(QtWidgets.QWidget):
     # Now using streaming.py functions
     
     def toggle_radio(self):
+        print("toggle_radio called")
         if not self.radio_btn.isEnabled():
             return
 
@@ -890,7 +891,6 @@ class NRSC5Gui(QtWidgets.QWidget):
                 self.stopping_radio = True
                 self.stop_stream()
                 self.stopping_radio = False
-                QtCore.QTimer.singleShot(30, self.start_stream)  # no freeze
             else:
                 self.start_stream()
         finally:
