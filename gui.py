@@ -881,7 +881,6 @@ class NRSC5Gui(QtWidgets.QWidget):
     # Now using streaming.py functions
     
     def toggle_radio(self):
-        print("toggle_radio called")
         if not self.radio_btn.isEnabled():
             return
 
