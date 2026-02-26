@@ -429,12 +429,14 @@ class NRSC5Gui(QtWidgets.QWidget):
             else:
                 # Live retune failed on this backend: restart receiver only
                 # to keep ffplay/recording pipes alive and avoid UI pauses.
-                QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
+                if not self.stopping_radio:
+                    QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
         elif prog_changed:
             # Program-only change → try live switch
             if not self._live_change_program(new_prog):
                 # fallback (very rare): restart receiver only
-                QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
+                if not self.stopping_radio:
+                    QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
     def _import_presets(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Import Presets", "", "JSON Files (*.json);;All Files (*)"
@@ -774,7 +776,8 @@ class NRSC5Gui(QtWidgets.QWidget):
         if self.radio_running:
             prog = self._get_current_program_number()
             if not self._live_change_program(prog):
-                QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
+                if not self.stopping_radio:
+                    QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
 
     def _units_changed(self, index):
         self._update_user_location()
@@ -906,9 +909,40 @@ class NRSC5Gui(QtWidgets.QWidget):
         return True
 
 
-    def _restart_receiver_for_preset(self):
-        """Restart only the NRSC5 receiver, keeping ffplay/ffmpeg running."""
+    def _ensure_audio_processes_for_running_stream(self):
+        """Ensure ffplay (and optional recorder) are alive for an active stream."""
         if not self.radio_running:
+            return True
+
+        if not self.proc_play or self.proc_play.state() != QtCore.QProcess.Running:
+            self.proc_play = start_ffplay_process(
+                error_callback=lambda e: self._on_process_error("ffplay", e),
+                finished_callback=lambda code, status: self._on_process_finished(
+                    "ffplay", code, status
+                )
+            )
+            if not self.proc_play:
+                self._log_console("Failed to restart ffplay for preset retune.")
+                return False
+
+        if self.recording and (
+            not self.proc_rec or self.proc_rec.state() != QtCore.QProcess.Running
+        ):
+            self.proc_rec = start_ffmpeg_recorder(
+                self.current_record_file,
+                error_callback=lambda e: self._on_process_error("ffmpeg", e),
+                finished_callback=lambda code, status: self._on_process_finished(
+                    "ffmpeg", code, status
+                )
+            )
+            if not self.proc_rec:
+                self._log_console("Failed to restart recorder for preset retune.")
+
+        return True
+
+    def _restart_receiver_for_preset(self):
+        """Restart NRSC5 and ensure audio sinks are alive after preset retune."""
+        if not self.radio_running or self.stopping_radio:
             return
 
         freq = self.freq_edit.text().strip()
@@ -916,8 +950,14 @@ class NRSC5Gui(QtWidgets.QWidget):
         host = self.host_edit.text().strip()
         port = self.port_edit.text().strip()
 
+        self._reset_labels()
+
         kill_process(self.proc_nrsc5)
         self.proc_nrsc5 = None
+
+        if not self._ensure_audio_processes_for_running_stream():
+            self.stop_stream()
+            return
 
         self.proc_nrsc5 = start_nrsc5_process(
             freq, prog, host, port,
