@@ -9,7 +9,7 @@ import time
 from lib.nrsc5 import NRSC5, NRSC5Error, ctypes  # make sure ctypes is imported too
 
 class ExtendedNRSC5(NRSC5):
-    """Our own version with the missing set_program method added."""
+    """Our own version with missing live-tuning methods added."""
     def set_program(self, program):
         """Change the active audio program (0-3) at runtime."""
         self._check_session()
@@ -17,11 +17,21 @@ class ExtendedNRSC5(NRSC5):
         if result != 0:
             raise NRSC5Error(f"nrsc5_set_program failed with code {result}")
 
+    def set_frequency(self, freq_hz):
+        """Change the tuned RF frequency at runtime (Hz)."""
+        self._check_session()
+        result = self.libnrsc5.nrsc5_set_frequency(self.radio, ctypes.c_float(freq_hz))
+        if result != 0:
+            raise NRSC5Error(f"nrsc5_set_frequency failed with code {result}")
+
 class NRSC5Wrapper(QtCore.QObject):
     readyReadStandardOutput = QtCore.pyqtSignal()
     readyReadStandardError = QtCore.pyqtSignal()
     errorOccurred = QtCore.pyqtSignal(QtCore.QProcess.ProcessError)
     finished = QtCore.pyqtSignal(int, QtCore.QProcess.ExitStatus)
+    metadataChanged = QtCore.pyqtSignal(dict)
+    berChanged = QtCore.pyqtSignal(float)
+    stationLocationChanged = QtCore.pyqtSignal(float, float, float)
 
     def __init__(self):
         super().__init__()
@@ -44,7 +54,7 @@ class NRSC5Wrapper(QtCore.QObject):
             self.nrsc5.set_mode(Mode.FM)  # Assume FM; add config if AM needed
             self.nrsc5.start()
             self.running = True
-            self._add_stderr("NRSC5 started via API.")
+            self._log("NRSC5 started via API.")
             return True
         except Exception as e:
             print(f"Error starting NRSC5: {e}")
@@ -73,7 +83,6 @@ class NRSC5Wrapper(QtCore.QObject):
     def terminate(self):
         if self.nrsc5:
             self.nrsc5.stop()
-            time.sleep(0.1)  # Minimal wait for cleanup
             self.nrsc5.close()
         self.running = False
         self.finished.emit(0, QtCore.QProcess.NormalExit)
@@ -89,6 +98,10 @@ class NRSC5Wrapper(QtCore.QObject):
         self.stderr_buffer.extend((text + "\n").encode())
         self.readyReadStandardError.emit()
 
+    def _log(self, text):
+        """Send non-structured NRSC5 messages to the console."""
+        print(f"[nrsc5] {text}")
+
     def set_program(self, prog):
        """Live program change via API (no restart). Returns True on success."""
        if not self.nrsc5 or not self.running:
@@ -96,10 +109,23 @@ class NRSC5Wrapper(QtCore.QObject):
        try:
            self.program = int(prog)
            self.nrsc5.set_program(self.program)
-           self._add_stderr(f"Switched to program {self.program}")
+           self._log(f"Switched to program {self.program}")
            return True
        except Exception as e:
-           self._add_stderr(f"Program switch failed: {e}")
+           self._log(f"Program switch failed: {e}")
+           return False
+
+    def set_frequency(self, freq_mhz):
+       """Live frequency change via API (no restart). Returns True on success."""
+       if not self.nrsc5 or not self.running:
+           return False
+       try:
+           freq_hz = float(freq_mhz) * 1e6
+           self.nrsc5.set_frequency(freq_hz)
+           self._log(f"Switched to frequency {float(freq_mhz):.1f} MHz")
+           return True
+       except Exception as e:
+           self._log(f"Frequency switch failed: {e}")
            return False
 
     def _api_callback(self, evt_type, evt):
@@ -109,22 +135,29 @@ class NRSC5Wrapper(QtCore.QObject):
                     self._add_stdout(evt.data)
             elif evt_type == EventType.ID3:
                 if evt.program == self.program:
+                    meta = {}
                     if evt.title:
-                        self._add_stderr(f"Title: {evt.title}")
+                        meta["title"] = evt.title
                     if evt.artist:
-                        self._add_stderr(f"Artist: {evt.artist}")
+                        meta["artist"] = evt.artist
                     if evt.album:
-                        self._add_stderr(f"Album: {evt.album}")
+                        meta["album"] = evt.album
+                    if meta:
+                        self.metadataChanged.emit(meta)
             elif evt_type == EventType.BER:
-                self._add_stderr(f"BER: {evt.cber:.6f}")
+                self.berChanged.emit(evt.cber * 100.0)
             elif evt_type == EventType.STATION_LOCATION:
-                self._add_stderr(f"Station location: {evt.latitude}, {evt.longitude}, {evt.altitude}m")
+                self.stationLocationChanged.emit(
+                    evt.latitude,
+                    evt.longitude,
+                    evt.altitude,
+                )
             elif evt_type == EventType.SYNC:
-                self._add_stderr("Got sync!")
+                self._log("Got sync!")
             elif evt_type == EventType.LOST_SYNC:
-                self._add_stderr("Lost sync!")
+                self._log("Lost sync!")
             elif evt_type == EventType.LOST_DEVICE:
-                self._add_stderr("Lost device!")
+                self._log("Lost device!")
                 self.errorOccurred.emit(QtCore.QProcess.Crashed)
                 self.finished.emit(1, QtCore.QProcess.CrashExit)
                 self.running = False
@@ -135,12 +168,16 @@ def kill_process(proc):
         if isinstance(proc, NRSC5Wrapper):
             if proc.state() != QtCore.QProcess.NotRunning:
                 proc.terminate()
-                time.sleep(1)  # Mimic waitForFinished(1000)
+                if proc.state() != QtCore.QProcess.NotRunning:
+                    # Short grace period without blocking for a full second.
+                    deadline = time.time() + 0.25
+                    while proc.state() != QtCore.QProcess.NotRunning and time.time() < deadline:
+                        time.sleep(0.01)
                 if proc.state() != QtCore.QProcess.NotRunning:
                     proc.kill()
         elif proc.state() != QtCore.QProcess.NotRunning:
             proc.terminate()
-            if not proc.waitForFinished(1000):
+            if not proc.waitForFinished(400):
                 proc.kill()
 
 
@@ -213,7 +250,7 @@ def start_ffplay_process(error_callback, finished_callback):
     proc.finished.connect(finished_callback)
     proc.start("ffplay", play_args)
     
-    if proc.waitForStarted(2000):
+    if proc.waitForStarted(700):
         return proc
     else:
         kill_process(proc)
@@ -252,7 +289,7 @@ def start_ffmpeg_recorder(output_file, error_callback, finished_callback):
     proc.finished.connect(finished_callback)
     proc.start("ffmpeg", ffmpeg_args)
 
-    if proc.waitForStarted(1000):
+    if proc.waitForStarted(700):
         return proc
     else:
         kill_process(proc)
@@ -267,6 +304,7 @@ def stop_ffmpeg_recorder(proc_rec):
     """
     if proc_rec and proc_rec.state() == QtCore.QProcess.Running:
         proc_rec.closeWriteChannel()
-        proc_rec.waitForFinished(2000)
-        if proc_rec.state() == QtCore.QProcess.Running:
+        if not proc_rec.waitForFinished(500):
             proc_rec.terminate()
+            if not proc_rec.waitForFinished(250):
+                proc_rec.kill()
