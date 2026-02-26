@@ -3,7 +3,7 @@ Main GUI class and all widgets, layouts, and signal connections.
 Original file: nrsc5_gui_qt.py (NRSC5Gui class)
 """
 
-from PyQt5 import QtCore, QtWidgets, QtGui
+from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
 import shutil
 import sys
@@ -20,7 +20,6 @@ from utils import (
     format_distance,
     format_altitude_difference,
     fit_font_to_label,
-    parse_metadata_line,
 )
 
 from streaming import (
@@ -63,8 +62,7 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.user_lon = None
         self.user_alt = None  # always stored in meters internally
 
-        # Log and history limits
-        self.max_log_lines = 10000
+        # History limits
         self.max_history_rows = 500
 
         # BER graph data
@@ -159,22 +157,6 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.ber_plot.setLimits(yMin=0)
         self.ber_plot.setXRange(0, self.ber_max_points - 1)
         self.ber_plot.setYRange(0, 10)
-
-        # ---------- NRSC5 log widgets ----------
-        self.log_toggle_btn = QtWidgets.QToolButton()
-        self.log_toggle_btn.setText("NRSC5 Log")
-        self.log_toggle_btn.setCheckable(True)
-        self.log_toggle_btn.setChecked(False)
-        self.log_toggle_btn.setToolButtonStyle(
-            QtCore.Qt.ToolButtonTextBesideIcon
-        )
-        self.log_toggle_btn.setArrowType(QtCore.Qt.RightArrow)
-
-        self.clear_log_btn = QtWidgets.QPushButton("Clear Log")
-
-        self.log_text = QtWidgets.QPlainTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setVisible(False)
 
         # ---------- Now-playing history widgets ----------
         self.history_toggle_btn = QtWidgets.QToolButton()
@@ -294,23 +276,9 @@ class NRSC5Gui(QtWidgets.QWidget):
         top_layout.addWidget(self.history_toggle_btn)
         top_layout.addWidget(self.history_table)
 
-        bottom_log_widget = QtWidgets.QWidget()
-        bottom_layout = QtWidgets.QVBoxLayout(bottom_log_widget)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-
-        log_header_layout = QtWidgets.QHBoxLayout()
-        log_header_layout.addWidget(self.log_toggle_btn)
-        log_header_layout.addStretch()
-        log_header_layout.addWidget(self.clear_log_btn)
-
-        bottom_layout.addLayout(log_header_layout)
-        bottom_layout.addWidget(self.log_text)
-
         self.info_splitter.addWidget(top_info_widget)
-        self.info_splitter.addWidget(bottom_log_widget)
-        self.info_splitter.setStretchFactor(0, 4)
-        self.info_splitter.setStretchFactor(1, 1)
-        self.info_splitter.setSizes([400, 120])
+        self.info_splitter.setStretchFactor(0, 1)
+        self.info_splitter.setSizes([520])
 
         info_layout.addWidget(self.info_splitter)
 
@@ -330,9 +298,7 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.radio_btn.clicked.connect(self.toggle_radio)
         self.record_btn.clicked.connect(self.toggle_recording)
         self.browse_dir_btn.clicked.connect(self._choose_record_directory)
-        self.log_toggle_btn.toggled.connect(self._toggle_log_visibility)
         self.history_toggle_btn.toggled.connect(self._toggle_history_visibility)
-        self.clear_log_btn.clicked.connect(self._clear_log)
         self.units_combo.currentIndexChanged.connect(self._units_changed)
 
         self.user_lat_edit.editingFinished.connect(self._update_user_location)
@@ -456,17 +422,19 @@ class NRSC5Gui(QtWidgets.QWidget):
         prog_changed = new_prog != current_prog
 
         if freq_changed:
-            # Frequency change needs full restart
-            self.stopping_radio = True
-            self.stop_stream()
-            self.stopping_radio = False
-            QtCore.QTimer.singleShot(30, self.start_stream)  # yields to Qt → no freeze
+            # Prefer live retune to avoid blocking restart on preset load.
+            if self._live_change_frequency(new_freq):
+                if prog_changed:
+                    self._live_change_program(new_prog)
+            else:
+                # Live retune failed on this backend: restart receiver only
+                # to keep ffplay/recording pipes alive and avoid UI pauses.
+                QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
         elif prog_changed:
             # Program-only change → try live switch
             if not self._live_change_program(new_prog):
-                # fallback (very rare)
-                self.stop_stream()
-                QtCore.QTimer.singleShot(30, self.start_stream)
+                # fallback (very rare): restart receiver only
+                QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
     def _import_presets(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Import Presets", "", "JSON Files (*.json);;All Files (*)"
@@ -617,25 +585,12 @@ class NRSC5Gui(QtWidgets.QWidget):
             self.recording
         )
 
-    # ================ Log Handling ================
-    # Original: NRSC5Gui._append_log_line(), _clear_log()
-    
-    def _append_log_line(self, line):
-        self.log_text.appendPlainText(line)
-        doc = self.log_text.document()
-        while doc.blockCount() > self.max_log_lines:
-            block = doc.firstBlock()
-            cursor = QtGui.QTextCursor(block)
-            cursor.select(QtGui.QTextCursor.BlockUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
-
-    def _clear_log(self):
-        self.log_text.clear()
+    def _log_console(self, line):
+        print(f"[gui] {line}")
 
     # ================ Process Diagnostics ================
     # Original: NRSC5Gui._on_process_error(), _on_process_finished(), etc.
-    
+
     def _on_process_error(self, name, error):
         err_map = {
             QtCore.QProcess.FailedToStart: "Failed to start",
@@ -648,10 +603,10 @@ class NRSC5Gui(QtWidgets.QWidget):
         msg = err_map.get(error, "Unknown error")
 
         if self.stopping_radio and error == QtCore.QProcess.Crashed:
-            self._append_log_line(f"{name} terminated (user stop).")
+            self._log_console(f"{name} terminated (user stop).")
             return
 
-        self._append_log_line(f"{name} error: {msg} ({int(error)})")
+        self._log_console(f"{name} error: {msg} ({int(error)})")
 
         if name == "nrsc5":
             self.status_text = f"Status: nrsc5 error: {msg}"
@@ -662,11 +617,11 @@ class NRSC5Gui(QtWidgets.QWidget):
 
     def _on_process_finished(self, name, exitCode, exitStatus):
         if self.stopping_radio and exitStatus == QtCore.QProcess.CrashExit:
-            self._append_log_line(f"{name} terminated (user stop).")
+            self._log_console(f"{name} terminated (user stop).")
             return
 
         status_str = "normal" if exitStatus == QtCore.QProcess.NormalExit else "crashed"
-        self._append_log_line(
+        self._log_console(
             f"{name} finished with code {exitCode}, status: {status_str}"
         )
 
@@ -676,67 +631,46 @@ class NRSC5Gui(QtWidgets.QWidget):
         if self.radio_running and not self.stopping_radio:
             self.stop_stream()
 
-    # ================ Metadata & BER Parsing ================
-    # Original: NRSC5Gui._parse_metadata_output(), _update_ber_graph()
-    # Now using utils.parse_metadata_line()
-    
-    def _parse_metadata_output(self):
-        if not self.proc_nrsc5:
-            return
-
-        raw_bytes = self.proc_nrsc5.readAllStandardError()
-        text = bytes(raw_bytes).decode(errors="ignore")
-
+    # ================ Metadata & BER Event Handlers ================
+    def _on_metadata_event(self, parsed):
         metadata_changed = False
 
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        if 'title' in parsed:
+            title_text = parsed['title']
+            self.title_label.setText(title_text)
+            self.display_title_label.setText(title_text)
+            metadata_changed = True
 
-            self._append_log_line(line)
+        if 'artist' in parsed:
+            artist_text = parsed['artist']
+            self.artist_label.setText(artist_text)
 
-            parsed = parse_metadata_line(line)
-            if not parsed:
-                continue
+            # Easter egg
+            if "bieber" in artist_text.lower():
+                self.display_artist_label.setText("[artist choice not endorsed]")
+            else:
+                self.display_artist_label.setText(artist_text)
 
-            if 'ber' in parsed:
-                self.ber_text = f"{parsed['ber']:.3f} %"
-                self._update_ber_graph(parsed['ber'])
-                self._update_info_summary_line()
+            metadata_changed = True
 
-            if 'title' in parsed:
-                title_text = parsed['title']
-                self.title_label.setText(title_text)
-                self.display_title_label.setText(title_text)
-                metadata_changed = True
-
-            if 'artist' in parsed:
-                artist_text = parsed['artist']
-                self.artist_label.setText(artist_text)
-
-                # Easter egg
-                if "bieber" in artist_text.lower():
-                    self.display_artist_label.setText("[artist choice not endorsed]")
-                else:
-                    self.display_artist_label.setText(artist_text)
-
-                metadata_changed = True
-
-            if 'album' in parsed:
-                self.album_label.setText(parsed['album'])
-                metadata_changed = True
-
-            if 'station_loc' in parsed:
-                lat, lon, alt = parsed['station_loc']
-                self.station_lat = lat
-                self.station_lon = lon
-                self.station_alt = alt
-                self._update_distances()
+        if 'album' in parsed:
+            self.album_label.setText(parsed['album'])
+            metadata_changed = True
 
         if metadata_changed:
             self._maybe_add_history_entry()
             self._update_display_fonts()
+
+    def _on_ber_event(self, ber):
+        self.ber_text = f"{ber:.3f} %"
+        self._update_ber_graph(ber)
+        self._update_info_summary_line()
+
+    def _on_station_location_event(self, lat, lon, alt):
+        self.station_lat = lat
+        self.station_lon = lon
+        self.station_alt = alt
+        self._update_distances()
 
     def _update_ber_graph(self, ber_value):
         self.ber_history.append(ber_value)
@@ -826,6 +760,14 @@ class NRSC5Gui(QtWidgets.QWidget):
             return self.proc_nrsc5.set_program(new_prog)
         return False
 
+    def _live_change_frequency(self, new_freq):
+        """Try to change frequency without restarting nrsc5."""
+        if (
+            self.radio_running
+            and isinstance(self.proc_nrsc5, NRSC5Wrapper)
+        ):
+            return self.proc_nrsc5.set_frequency(new_freq)
+        return False
 
     def _on_program_combo_changed(self, index):
         """Live program switch when user changes the dropdown while running."""
@@ -962,6 +904,39 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         return True
 
+
+    def _restart_receiver_for_preset(self):
+        """Restart only the NRSC5 receiver, keeping ffplay/ffmpeg running."""
+        if not self.radio_running:
+            return
+
+        freq = self.freq_edit.text().strip()
+        prog = str(self._get_current_program_number()).strip()
+        host = self.host_edit.text().strip()
+        port = self.port_edit.text().strip()
+
+        kill_process(self.proc_nrsc5)
+        self.proc_nrsc5 = None
+
+        self.proc_nrsc5 = start_nrsc5_process(
+            freq, prog, host, port,
+            error_callback=lambda e: self._on_process_error("nrsc5", e),
+            stdout_callback=self._distribute_audio_data,
+            stderr_callback=lambda: None,
+            finished_callback=self._on_nrsc5_finished
+        )
+
+        if isinstance(self.proc_nrsc5, NRSC5Wrapper):
+            self.proc_nrsc5.metadataChanged.connect(self._on_metadata_event)
+            self.proc_nrsc5.berChanged.connect(self._on_ber_event)
+            self.proc_nrsc5.stationLocationChanged.connect(
+                self._on_station_location_event
+            )
+
+        if not self.proc_nrsc5:
+            self._log_console("Receiver restart failed; stopping stream.")
+            self.stop_stream()
+
     def start_stream(self):
         if self.radio_running:
             return
@@ -992,9 +967,16 @@ class NRSC5Gui(QtWidgets.QWidget):
             freq, prog, host, port,
             error_callback=lambda e: self._on_process_error("nrsc5", e),
             stdout_callback=self._distribute_audio_data,
-            stderr_callback=self._parse_metadata_output,
+            stderr_callback=lambda: None,
             finished_callback=self._on_nrsc5_finished
         )
+
+        if isinstance(self.proc_nrsc5, NRSC5Wrapper):
+            self.proc_nrsc5.metadataChanged.connect(self._on_metadata_event)
+            self.proc_nrsc5.berChanged.connect(self._on_ber_event)
+            self.proc_nrsc5.stationLocationChanged.connect(
+                self._on_station_location_event
+            )
 
         if self.proc_nrsc5:
             self.radio_running = True
@@ -1190,7 +1172,6 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.ber_history = []
         self.ber_curve.clear()
 
-        self.log_text.clear()
 
         self.last_title = None
         self.last_artist = None
@@ -1209,27 +1190,12 @@ class NRSC5Gui(QtWidgets.QWidget):
         if directory:
             self.record_dir_edit.setText(directory)
 
-    def _toggle_log_visibility(self, checked):
-        self.log_text.setVisible(checked)
-        self.log_toggle_btn.setArrowType(
-            QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow
-        )
-        sizes = self.info_splitter.sizes()
-        total = sum(sizes) if sizes else 1
-        if checked:
-            self.info_splitter.setSizes([int(total * 0.6), int(total * 0.4)])
-        else:
-            self.info_splitter.setSizes([int(total * 0.9), int(total * 0.1)])
-
     def _toggle_history_visibility(self, checked):
         self.history_table.setVisible(checked)
         self.history_toggle_btn.setArrowType(
             QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow
         )
 
-        sizes = self.info_splitter.sizes()
-        total = sum(sizes) if sizes else 1
-        self.info_splitter.setSizes([int(total * 0.7), int(total * 0.3)])
 
     def _on_tab_changed(self, index):
         if self.tabs.widget(index) is self.display_tab:
