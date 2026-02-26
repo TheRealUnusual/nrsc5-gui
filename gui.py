@@ -52,6 +52,7 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.radio_running = False
         self.recording = False
         self.stopping_radio = False  # true while user is stopping the radio
+        self.restarting_receiver = False  # true while doing internal preset restart
 
         # Station and user location (lat, lon in degrees, alt in meters)
         self.station_lat = None
@@ -403,7 +404,7 @@ class NRSC5Gui(QtWidgets.QWidget):
         if not meta:
             return
         new_freq = meta.get("freq", "").strip()
-        new_prog_str = meta.get("prog", "0")
+        new_prog_str = self._normalize_program_value(meta.get("prog", "0"))
         new_prog = int(new_prog_str)
 
         current_freq = self.freq_edit.text().strip()
@@ -437,6 +438,14 @@ class NRSC5Gui(QtWidgets.QWidget):
                 # fallback (very rare): restart receiver only
                 if not self.stopping_radio:
                     QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
+
+    def _normalize_program_value(self, value):
+        """Return a safe program string for UI/storage compatibility."""
+        try:
+            return str(int(str(value).strip()))
+        except (TypeError, ValueError):
+            return "0"
+
     def _import_presets(self):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Import Presets", "", "JSON Files (*.json);;All Files (*)"
@@ -463,12 +472,15 @@ class NRSC5Gui(QtWidgets.QWidget):
                 continue
             name = meta.get("name", "")
             freq = meta.get("freq", "")
-            prog = meta.get("prog", "0")
+            prog = self._normalize_program_value(meta.get("prog", "0"))
             if not freq:
                 continue
             text = f"{name or (freq + ' MHz P' + prog)} — {freq} MHz (P{prog})"
             item = QtWidgets.QListWidgetItem(text)
-            item.setData(QtCore.Qt.UserRole, meta)
+            item.setData(
+                QtCore.Qt.UserRole,
+                {"name": name, "freq": freq, "prog": prog},
+            )
             self.preset_list.addItem(item)
 
     def _export_presets(self):
@@ -546,12 +558,15 @@ class NRSC5Gui(QtWidgets.QWidget):
         for meta in presets:
             name = meta.get("name", "")
             freq = meta.get("freq", "")
-            prog = meta.get("prog", "0")
+            prog = self._normalize_program_value(meta.get("prog", "0"))
             if not freq:
                 continue
             text = f"{name or (freq + ' MHz P' + prog)} — {freq} MHz (P{prog})"
             item = QtWidgets.QListWidgetItem(text)
-            item.setData(QtCore.Qt.UserRole, meta)
+            item.setData(
+                QtCore.Qt.UserRole,
+                {"name": name, "freq": freq, "prog": prog},
+            )
             self.preset_list.addItem(item)
 
     def _save_presets(self):
@@ -629,6 +644,10 @@ class NRSC5Gui(QtWidgets.QWidget):
 
     def _on_nrsc5_finished(self, exitCode, exitStatus):
         self._on_process_finished("nrsc5", exitCode, exitStatus)
+
+        if self.restarting_receiver:
+            self._log_console("nrsc5 receiver restart in progress; ignoring finish event.")
+            return
 
         if self.radio_running and not self.stopping_radio:
             self.stop_stream()
@@ -856,10 +875,11 @@ class NRSC5Gui(QtWidgets.QWidget):
                 return 0
 
     def _select_program_by_number(self, prog_str):
+        normalized_prog = self._normalize_program_value(prog_str)
         for i in range(self.prog_combo.count()):
             text = self.prog_combo.itemText(i).strip()
             num_str = text.split("-")[0].strip()
-            if num_str == prog_str:
+            if num_str == normalized_prog:
                 self.prog_combo.setCurrentIndex(i)
                 return
 
@@ -952,31 +972,35 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         self._reset_labels()
 
-        kill_process(self.proc_nrsc5)
-        self.proc_nrsc5 = None
+        self.restarting_receiver = True
+        try:
+            kill_process(self.proc_nrsc5)
+            self.proc_nrsc5 = None
 
-        if not self._ensure_audio_processes_for_running_stream():
-            self.stop_stream()
-            return
+            if not self._ensure_audio_processes_for_running_stream():
+                self.stop_stream()
+                return
 
-        self.proc_nrsc5 = start_nrsc5_process(
-            freq, prog, host, port,
-            error_callback=lambda e: self._on_process_error("nrsc5", e),
-            stdout_callback=self._distribute_audio_data,
-            stderr_callback=lambda: None,
-            finished_callback=self._on_nrsc5_finished
-        )
-
-        if isinstance(self.proc_nrsc5, NRSC5Wrapper):
-            self.proc_nrsc5.metadataChanged.connect(self._on_metadata_event)
-            self.proc_nrsc5.berChanged.connect(self._on_ber_event)
-            self.proc_nrsc5.stationLocationChanged.connect(
-                self._on_station_location_event
+            self.proc_nrsc5 = start_nrsc5_process(
+                freq, prog, host, port,
+                error_callback=lambda e: self._on_process_error("nrsc5", e),
+                stdout_callback=self._distribute_audio_data,
+                stderr_callback=lambda: None,
+                finished_callback=self._on_nrsc5_finished
             )
 
-        if not self.proc_nrsc5:
-            self._log_console("Receiver restart failed; stopping stream.")
-            self.stop_stream()
+            if isinstance(self.proc_nrsc5, NRSC5Wrapper):
+                self.proc_nrsc5.metadataChanged.connect(self._on_metadata_event)
+                self.proc_nrsc5.berChanged.connect(self._on_ber_event)
+                self.proc_nrsc5.stationLocationChanged.connect(
+                    self._on_station_location_event
+                )
+
+            if not self.proc_nrsc5:
+                self._log_console("Receiver restart failed; stopping stream.")
+                self.stop_stream()
+        finally:
+            self.restarting_receiver = False
 
     def start_stream(self):
         if self.radio_running:
