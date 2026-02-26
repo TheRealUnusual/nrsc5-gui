@@ -4,31 +4,39 @@ Original file: nrsc5_gui_qt.py (streaming/recording methods)
 """
 
 from PyQt5 import QtCore
-from lib.nrsc5 import NRSC5, EventType, Mode
+from lib.nrsc5 import NRSC5, EventType, Mode, NRSC5Error, ctypes
 import time
-from lib.nrsc5 import NRSC5, NRSC5Error, ctypes  # make sure ctypes is imported too
 
 class ExtendedNRSC5(NRSC5):
     """Our own version with missing live-tuning methods added."""
+
+    def _require_symbol(self, symbol_name):
+        symbol = getattr(self.libnrsc5, symbol_name, None)
+        if symbol is None:
+            raise NRSC5Error(f"{symbol_name} is not available in this libnrsc5 build")
+        return symbol
+
     def set_program(self, program):
         """Change the active audio program (0-3) at runtime."""
         self._check_session()
-        result = self.libnrsc5.nrsc5_set_program(self.radio, ctypes.c_uint(program))
+        set_program_fn = self._require_symbol("nrsc5_set_program")
+        result = set_program_fn(self.radio, ctypes.c_uint(program))
         if result != 0:
             raise NRSC5Error(f"nrsc5_set_program failed with code {result}")
 
     def set_frequency(self, freq_hz):
         """Change the tuned RF frequency at runtime (Hz)."""
         self._check_session()
-        result = self.libnrsc5.nrsc5_set_frequency(self.radio, ctypes.c_float(freq_hz))
+        set_freq_fn = self._require_symbol("nrsc5_set_frequency")
+        result = set_freq_fn(self.radio, ctypes.c_float(freq_hz))
         if result != 0:
             raise NRSC5Error(f"nrsc5_set_frequency failed with code {result}")
 
 class NRSC5Wrapper(QtCore.QObject):
     readyReadStandardOutput = QtCore.pyqtSignal()
     readyReadStandardError = QtCore.pyqtSignal()
-    errorOccurred = QtCore.pyqtSignal(QtCore.QProcess.ProcessError)
-    finished = QtCore.pyqtSignal(int, QtCore.QProcess.ExitStatus)
+    errorOccurred = QtCore.pyqtSignal(int)
+    finished = QtCore.pyqtSignal(int, int)
     metadataChanged = QtCore.pyqtSignal(dict)
     berChanged = QtCore.pyqtSignal(float)
     stationLocationChanged = QtCore.pyqtSignal(float, float, float)
@@ -54,7 +62,12 @@ class NRSC5Wrapper(QtCore.QObject):
             self.nrsc5.set_mode(Mode.FM)  # Assume FM; add config if AM needed
             self.nrsc5.start()
             self.running = True
-            self.nrsc5.set_program(self.program)
+            if self.program != 0:
+                try:
+                    self.nrsc5.set_program(self.program)
+                except Exception as e:
+                    self._log(f"Program select unavailable; continuing on default program: {e}")
+                    self.program = 0
             self._log(f"NRSC5 started via API (program {self.program}).")
             return True
         except Exception as e:
@@ -108,8 +121,9 @@ class NRSC5Wrapper(QtCore.QObject):
        if not self.nrsc5 or not self.running:
            return False
        try:
-           self.program = int(prog)
-           self.nrsc5.set_program(self.program)
+           new_program = int(prog)
+           self.nrsc5.set_program(new_program)
+           self.program = new_program
            self._log(f"Switched to program {self.program}")
            return True
        except Exception as e:
