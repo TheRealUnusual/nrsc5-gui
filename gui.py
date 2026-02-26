@@ -773,7 +773,8 @@ class NRSC5Gui(QtWidgets.QWidget):
         """Live program switch when user changes the dropdown while running."""
         if self.radio_running:
             prog = self._get_current_program_number()
-            self._live_change_program(prog)
+            if not self._live_change_program(prog):
+                QtCore.QTimer.singleShot(0, self._restart_receiver_for_preset)
 
     def _units_changed(self, index):
         self._update_user_location()

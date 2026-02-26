@@ -66,8 +66,9 @@ class NRSC5Wrapper(QtCore.QObject):
                 try:
                     self.nrsc5.set_program(self.program)
                 except Exception as e:
-                    self._log(f"Program select unavailable; continuing on default program: {e}")
-                    self.program = 0
+                    self._log(
+                        f"Backend program switch unavailable; using local program filter P{self.program}: {e}"
+                    )
             self._log(f"NRSC5 started via API (program {self.program}).")
             return True
         except Exception as e:
@@ -127,6 +128,13 @@ class NRSC5Wrapper(QtCore.QObject):
            self._log(f"Switched to program {self.program}")
            return True
        except Exception as e:
+           err_text = str(e)
+           if "nrsc5_set_program is not available" in err_text:
+               self.program = int(prog)
+               self._log(
+                   f"Program API unavailable; switched to local program filter P{self.program}"
+               )
+               return True
            self._log(f"Program switch failed: {e}")
            return False
 
