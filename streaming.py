@@ -19,6 +19,30 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from PyQt5 import QtCore
 from lib.nrsc5 import NRSC5, EventType, Mode, NRSC5Error, ctypes
 import time
+from dataclasses import dataclass
+from typing import Literal, Optional
+
+
+@dataclass(frozen=True)
+class SourceConfig:
+    mode: Literal["rtltcp", "direct"]
+    host: Optional[str] = None
+    port: Optional[int] = None
+
+    def __post_init__(self):
+        if self.mode == "direct":
+            if self.host is not None or self.port is not None:
+                raise ValueError("Direct mode must not define host or port.")
+            return
+
+        if self.mode == "rtltcp":
+            if not self.host:
+                raise ValueError("rtl_tcp mode requires a host.")
+            if self.port is None:
+                raise ValueError("rtl_tcp mode requires a port.")
+            return
+
+        raise ValueError(f"Unsupported source mode: {self.mode}")
 
 class ExtendedNRSC5(NRSC5):
     """Our own version with missing live-tuning methods added."""
@@ -62,15 +86,16 @@ class NRSC5Wrapper(QtCore.QObject):
         self.running = False
         self.program = 0
 
-    def start(self, freq, prog, host, port):
+    def start(self, freq, prog, source_config: SourceConfig):
         try:
             self.program = int(prog)
             self.nrsc5 = ExtendedNRSC5(self._api_callback)
-            if host:
-                p = int(port) if port else 1234
-                self.nrsc5.open_rtltcp(host, p)
-            else:
+            if source_config.mode == "rtltcp":
+                self.nrsc5.open_rtltcp(source_config.host, source_config.port)
+            elif source_config.mode == "direct":
                 self.nrsc5.open(0)  # Assume device index 0; customize if needed
+            else:
+                raise ValueError(f"Unsupported source mode: {source_config.mode}")
             self.nrsc5.set_frequency(float(freq) * 1e6)  # Convert MHz to Hz
             self.nrsc5.set_mode(Mode.FM)  # Assume FM; add config if AM needed
             self.nrsc5.start()
@@ -242,13 +267,21 @@ def distribute_audio_data(proc_nrsc5, proc_play, proc_rec, is_recording):
 
 
 # ---------- Stream start/stop ----------
-def start_nrsc5_process(freq, prog, host, port, error_callback, stdout_callback, stderr_callback, finished_callback):
+def start_nrsc5_process(
+    freq,
+    prog,
+    source_config: SourceConfig,
+    error_callback,
+    stdout_callback,
+    stderr_callback,
+    finished_callback,
+):
     proc = NRSC5Wrapper()
     proc.errorOccurred.connect(error_callback)
     proc.readyReadStandardOutput.connect(stdout_callback)
     proc.readyReadStandardError.connect(stderr_callback)
     proc.finished.connect(finished_callback)
-    if proc.start(freq, prog, host, port):
+    if proc.start(freq, prog, source_config):
         return proc
     else:
         return None

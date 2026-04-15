@@ -43,6 +43,7 @@ from streaming import (
     start_ffmpeg_recorder,
     stop_ffmpeg_recorder,
     NRSC5Wrapper,
+    SourceConfig,
 )
 
 
@@ -114,6 +115,11 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         port_label = QtWidgets.QLabel("rtl_tcp port:")
         self.port_edit = QtWidgets.QLineEdit("1234")
+
+        self.source_mode_combo = QtWidgets.QComboBox()
+        self.source_mode_combo.addItems(
+            ["Direct RTL-SDR (no rtl_tcp)", "rtl_tcp (remote/local server)"]
+        )
 
         # Recording directory (config tab)
         default_record_dir = os.path.expanduser("~/Desktop")
@@ -261,6 +267,7 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         # ---------- Config tab layout ----------
         config_layout = QtWidgets.QFormLayout(self.config_tab)
+        config_layout.addRow("Input source:", self.source_mode_combo)
         config_layout.addRow(host_label, self.host_edit)
         config_layout.addRow(port_label, self.port_edit)
 
@@ -314,6 +321,7 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.browse_dir_btn.clicked.connect(self._choose_record_directory)
         self.history_toggle_btn.toggled.connect(self._toggle_history_visibility)
         self.units_combo.currentIndexChanged.connect(self._units_changed)
+        self.source_mode_combo.currentIndexChanged.connect(self._update_source_mode_ui)
 
         self.user_lat_edit.editingFinished.connect(self._update_user_location)
         self.user_lon_edit.editingFinished.connect(self._update_user_location)
@@ -522,6 +530,10 @@ class NRSC5Gui(QtWidgets.QWidget):
     def _load_settings(self):
         s = self.settings
 
+        source_mode_index = int(s.value("source_mode_index", 0))
+        if 0 <= source_mode_index < self.source_mode_combo.count():
+            self.source_mode_combo.setCurrentIndex(source_mode_index)
+
         self.host_edit.setText(s.value("host", self.host_edit.text()))
         self.port_edit.setText(s.value("port", self.port_edit.text()))
         self.freq_edit.setText(s.value("freq", self.freq_edit.text()))
@@ -544,9 +556,11 @@ class NRSC5Gui(QtWidgets.QWidget):
             self.restoreGeometry(geo)
 
         self._select_program_by_number(saved_prog)
+        self._update_source_mode_ui()
 
     def _save_settings(self):
         s = self.settings
+        s.setValue("source_mode_index", self.source_mode_combo.currentIndex())
         s.setValue("host", self.host_edit.text())
         s.setValue("port", self.port_edit.text())
         s.setValue("freq", self.freq_edit.text())
@@ -913,33 +927,47 @@ class NRSC5Gui(QtWidgets.QWidget):
             self.freq_edit.setFocus()
             return False
 
-        host = self.host_edit.text().strip()
-        port_text = self.port_edit.text().strip()
-        if host:
-            if not port_text:
-                QtWidgets.QMessageBox.warning(
-                    self, "Input Error",
-                    "Port is required when a remote rtl_tcp host is specified."
-                )
-                self.port_edit.setFocus()
-                return False
-            try:
-                port_val = int(port_text)
-            except ValueError:
-                QtWidgets.QMessageBox.warning(
-                    self, "Input Error", "Port must be an integer."
-                )
-                self.port_edit.setFocus()
-                return False
-            if not (1 <= port_val <= 65535):
-                QtWidgets.QMessageBox.warning(
-                    self, "Input Error",
-                    "Port must be between 1 and 65535."
-                )
-                self.port_edit.setFocus()
-                return False
-
         return True
+
+    def _build_source_config(self):
+        if not self.is_rtltcp():
+            return SourceConfig(mode="direct")
+
+        host = self.host_edit.text().strip()
+        if not host:
+            QtWidgets.QMessageBox.warning(
+                self, "Input Error", "Host is required in rtl_tcp mode."
+            )
+            self.host_edit.setFocus()
+            return None
+
+        port_text = self.port_edit.text().strip()
+        if not port_text:
+            QtWidgets.QMessageBox.warning(
+                self, "Input Error", "Port is required in rtl_tcp mode."
+            )
+            self.port_edit.setFocus()
+            return None
+        try:
+            port = int(port_text)
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self, "Input Error", "Port must be an integer."
+            )
+            self.port_edit.setFocus()
+            return None
+        if not (1 <= port <= 65535):
+            QtWidgets.QMessageBox.warning(
+                self, "Input Error", "Port must be between 1 and 65535."
+            )
+            self.port_edit.setFocus()
+            return None
+
+        try:
+            return SourceConfig(mode="rtltcp", host=host, port=port)
+        except ValueError as err:
+            QtWidgets.QMessageBox.warning(self, "Input Error", str(err))
+            return None
 
 
     def _ensure_audio_processes_for_running_stream(self):
@@ -980,8 +1008,10 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         freq = self.freq_edit.text().strip()
         prog = str(self._get_current_program_number()).strip()
-        host = self.host_edit.text().strip()
-        port = self.port_edit.text().strip()
+        source_config = self._build_source_config()
+        if source_config is None:
+            self.stop_stream()
+            return
 
         self._reset_labels()
 
@@ -995,7 +1025,7 @@ class NRSC5Gui(QtWidgets.QWidget):
                 return
 
             self.proc_nrsc5 = start_nrsc5_process(
-                freq, prog, host, port,
+                freq, prog, source_config,
                 error_callback=lambda e: self._on_process_error("nrsc5", e),
                 stdout_callback=self._distribute_audio_data,
                 stderr_callback=lambda: None,
@@ -1024,8 +1054,9 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         freq = self.freq_edit.text().strip()
         prog = str(self._get_current_program_number()).strip()
-        host = self.host_edit.text().strip()
-        port = self.port_edit.text().strip()
+        source_config = self._build_source_config()
+        if source_config is None:
+            return
 
         # Start ffplay (audio player)
         self.proc_play = start_ffplay_process(
@@ -1042,7 +1073,7 @@ class NRSC5Gui(QtWidgets.QWidget):
 
         # Start nrsc5 (receiver)
         self.proc_nrsc5 = start_nrsc5_process(
-            freq, prog, host, port,
+            freq, prog, source_config,
             error_callback=lambda e: self._on_process_error("nrsc5", e),
             stdout_callback=self._distribute_audio_data,
             stderr_callback=lambda: None,
@@ -1171,11 +1202,11 @@ class NRSC5Gui(QtWidgets.QWidget):
         self.record_btn.setEnabled(running)
 
         self.freq_edit.setEnabled(not running)
-        self.host_edit.setEnabled(not running)
+        self.source_mode_combo.setEnabled(not running)
         self.prog_combo.setEnabled(True)
-        self.port_edit.setEnabled(not running)
         self.record_dir_edit.setEnabled(not running)
         self.browse_dir_btn.setEnabled(not running)
+        self._update_source_mode_ui()
 
         if running:
             if not self.recording:
@@ -1183,6 +1214,16 @@ class NRSC5Gui(QtWidgets.QWidget):
         else:
             self.status_text = "Status: Idle"
         self._update_info_summary_line()
+
+    def is_rtltcp(self):
+        return self.source_mode_combo.currentIndex() == 1
+
+    def _update_source_mode_ui(self):
+        enable_network_fields = (
+            (not self.radio_running) and self.is_rtltcp()
+        )
+        self.host_edit.setEnabled(enable_network_fields)
+        self.port_edit.setEnabled(enable_network_fields)
 
     def _update_info_summary_line(self):
         status = self.status_text or "Status: N/A"
