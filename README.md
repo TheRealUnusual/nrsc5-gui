@@ -30,22 +30,75 @@ A graphical interface for **nrsc5** that allows tuning, listening, and recording
 - [pyqtgraph](https://pypi.org/project/pyqtgraph/)
 - [nrsc5](https://github.com/theori-io/nrsc5)
 - [ffmpeg](https://ffmpeg.org/)
-- [ffplay](https://ffmpeg.org/)
 
 ---
 
 ## Installation
 
-1. Clone this repository.
+### 1. Clone the repository
+```bash
+git clone https://github.com/TheRealUnusual/nrsc5-gui.git
+cd nrsc5-gui
+```
 
-3. Install Python dependencies:
+### 2. Install Python dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Ensure nrsc5, ffmpeg, and ffplay are installed and available in your PATH.
+### 3. Install system dependencies
 
-5. Set up an RTL-SDR via rtl_tcp.
+Install required system packages:
+
+- nrsc5 (must be built from source)
+- ffmpeg
+- rtl-sdr (provides rtl_tcp)
+- Cmake Building Tools (for building nrsc5)
+
+#### Debian / Ubuntu / Mint
+```bash
+sudo apt update
+sudo apt install ffmpeg rtl-sdr build-essential git cmake
+```
+
+#### Fedora / RHEL / CentOS
+```bash
+sudo dnf install ffmpeg rtl-sdr git gcc gcc-c++ make cmake
+```
+
+#### Arch / Manjaro
+```bash
+sudo pacman -S ffmpeg rtl-sdr git base-devel cmake
+```
+
+### 4. Build and install NRSC5
+
+```bash
+git clone https://github.com/theori-io/nrsc5.git
+cd nrsc5
+mkdir -p build
+cd build
+cmake ..
+make -j$(nproc)
+sudo make install
+sudo ldconfig
+```
+
+Verify installation:
+
+```bash
+nrsc5 --help
+```
+
+
+### 5. Start RTL-TCP server
+
+Start rtl_tcp (default port: 1234):
+
+```bash
+rtl_tcp
+```
 
 ## Usage
 
