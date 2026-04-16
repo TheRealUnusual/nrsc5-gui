@@ -85,16 +85,9 @@ sudo make install
 sudo ldconfig
 ```
 
-Verify installation:
-
-```bash
-nrsc5 --help
-```
-
-
 ### 5. Start RTL-TCP server
 
-Start rtl_tcp (default port: 1234):
+Start rtl_tcp (default host: localhost, default port: 1234):
 
 ```bash
 rtl_tcp
