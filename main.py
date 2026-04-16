@@ -19,14 +19,21 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import sys
 import signal
-from PyQt5 import QtWidgets
-from PyQt5 import QtCore
+import os
+from PyQt5 import QtWidgets, QtCore, QtGui
 from gui import NRSC5Gui
 
 
 def main():
     """Start the QApplication and show the main window."""
     app = QtWidgets.QApplication(sys.argv)
+
+    # Application icon
+    base_dir = os.path.dirname(__file__)
+    icon_path = os.path.join(base_dir, "assets", "icon.svg")
+    app.setWindowIcon(QtGui.QIcon(icon_path))
+    icon = QtGui.QIcon(icon_path)
+    app.setWindowIcon(icon)
 
     # Ensure Ctrl+C works cleanly in the terminal while the Qt event loop is running.
     def _handle_sigint(_sig, _frame):
